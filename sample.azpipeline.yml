@@ -1,0 +1,180 @@
+trigger:
+  branches:
+    include:
+      - dev
+      - uat
+      - production
+    exclude:
+      - main
+
+pool:
+  name: Default
+  demands:
+    - Agent.Name -equals ragav
+
+variables:
+  buildVersion: '1.0.$(Build.BuildId)'
+  artifactName: 'nodejs-app'
+  nexusUrl: 'http://localhost:8081'
+  nexusRepo: 'raw-artifacts'
+  nexusUsername: 'admin'
+  nexusPassword: '$(NEXUS_PASSWORD)'   # Stored securely in pipeline variables
+  isDev: $[eq(variables['Build.SourceBranch'], 'refs/heads/dev')]
+  isUAT: $[eq(variables['Build.SourceBranch'], 'refs/heads/uat')]
+  isProd: $[eq(variables['Build.SourceBranch'], 'refs/heads/production')]
+
+stages:
+
+# === 1. Environment Setup ===
+- stage: Setup
+  displayName: "1. Environment Setup"
+  jobs:
+    - job: ValidateAgent
+      steps:
+        - script: |
+            echo "Agent: $(Agent.Name)"
+            echo "Branch: $(Build.SourceBranch)"
+            node -v; npm -v
+            curl --version
+            powershell -Command "Get-Command Compress-Archive"
+          displayName: "Validate Tools"
+
+# === 2. Node.js Build & Archive ===
+- stage: BuildPackage
+  displayName: "2. Build & Package"
+  jobs:
+    - job: NodeBuild
+      displayName: "Build and Archive"
+      steps:
+        - task: NodeTool@0
+          inputs:
+            versionSpec: '18.x'
+          displayName: "Install Node.js"
+
+        - script: |
+            npm ci
+            npm run test
+            npm run build
+          displayName: "Install, Test, Build"
+
+        - task: CopyFiles@2
+          displayName: 'Copy Build Files'
+          inputs:
+            sourceFolder: '$(Build.SourcesDirectory)'
+            contents: |
+              .next/**
+              public/**
+              package.json
+              package-lock.json
+            targetFolder: 'next-app\$(artifactName)'
+
+        - powershell: |
+            $source = "$(Build.SourcesDirectory)\next-app\$(artifactName)"
+            $zipFile = "$(Build.ArtifactStagingDirectory)\$(artifactName)-$(buildVersion).zip"
+            Compress-Archive -Path "$source\*" -DestinationPath $zipFile -Force
+          displayName: "Archive Build as ZIP"
+
+        - publish: $(Build.ArtifactStagingDirectory)\$(artifactName)-$(buildVersion).zip
+          artifact: $(artifactName)
+          displayName: "Publish ZIP Artifact"
+
+# === 3. SonarQube Scan (Dev Only) ===
+- stage: SonarQubeScan
+  displayName: "3. SonarQube Analysis"
+  condition: and(succeeded(), eq(variables.isDev, true))
+  jobs:
+    - job: QualityCheck
+      displayName: "Run SonarQube Scan"
+      steps:
+        - task: SonarQubePrepare@7
+          inputs:
+            SonarQube: 'SonarQube'
+            scannerMode: 'CLI'
+            configMode: 'manual'
+            cliProjectKey: 'TEST_blogify_AZeB0syaOgINBlBDyaRJ'
+            cliProjectName: 'NodeJS App'
+            cliSources: '.'
+
+        - task: SonarQubeAnalyze@7
+          inputs:
+            jdkversion: 'JAVA_HOME'
+          displayName: "Analyze Code"
+
+        - task: SonarQubePublish@7
+          displayName: "Publish Sonar Results"
+
+# === 4. Upload ZIP to Nexus ===
+- stage: UploadToNexus
+  displayName: "4. Upload ZIP to Nexus"
+  dependsOn: BuildPackage
+  condition: succeeded()
+  jobs:
+    - job: PushToNexus
+      displayName: "Upload Artifact"
+      steps:
+        - download: current
+          artifact: $(artifactName)
+
+        - powershell: |
+            $zipFile = "$(Pipeline.Workspace)\$(artifactName)\$(artifactName)-$(buildVersion).zip"
+            $uploadUrl = "$(nexusUrl)/repository/$(nexusRepo)/nodejs-app-$(buildVersion).zip"
+            echo "Uploading ZIP to Nexus"
+            echo "ZIP Path: $zipFile"
+            echo "Upload URL: $uploadUrl"
+
+            if (!(Test-Path $zipFile)) {
+              Write-Error "❌ ZIP file not found at: $zipFile"
+              exit 1
+            }
+
+            curl.exe -v --fail -u "$(nexusUsername):$(nexusPassword)" --upload-file $zipFile $uploadUrl
+          displayName: "Upload ZIP to Nexus (using curl.exe)"
+
+# === 5. Trivy Vulnerability Scan (Dev Only) ===
+- stage: SecurityScan
+  displayName: "5. Trivy Security Scan"
+  condition: and(succeeded(), eq(variables.isDev, true))  # Run only on 'dev' branch
+  jobs:
+    - job: TrivyScan
+      displayName: "Scan ZIP for Vulnerabilities"
+      steps:
+
+        - download: current
+          artifact: $(artifactName)
+
+        - powershell: |
+            $zipFile = "$(Pipeline.Workspace)\$(artifactName)\$(artifactName)-$(buildVersion).zip"
+            $extractPath = "nodejs-app\unzipped"
+            Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+          displayName: "Extract ZIP Contents"
+
+        - powershell: |
+            $templatePath = "$(Build.SourcesDirectory)\template\junit.tpl"
+            $outputXml = "$(Build.ArtifactStagingDirectory)\junit-report-high-crit.xml"
+
+            if (!(Test-Path $templatePath)) {
+              Write-Error "❌ Trivy JUnit template not found: $templatePath"
+              exit 1
+            }
+
+            & "c:\trivy\trivy.exe" fs "nodejs-app\unzipped" `
+              --exit-code 0 `
+              --severity HIGH,CRITICAL `
+              --format template `
+              --template "@$templatePath" `
+              -o "$outputXml"
+          displayName: "Scan HIGH/CRITICAL Vulnerabilities with Trivy"
+
+        - powershell: |
+            Write-Host "🔍 Previewing Trivy XML Output:"
+            Get-Content "$(Build.ArtifactStagingDirectory)\junit-report-high-crit.xml"
+          displayName: "Preview Trivy XML Output (Debug Step)"
+
+        - task: PublishTestResults@2
+          inputs:
+            testResultsFormat: "JUnit"
+            testResultsFiles: "$(Build.ArtifactStagingDirectory)/junit-report-high-crit.xml"
+            failTaskOnFailedTests: false
+            testRunTitle: "Trivy Scan - High/Critical"
+          displayName: "📊 Publish Trivy Scan Results"
+
