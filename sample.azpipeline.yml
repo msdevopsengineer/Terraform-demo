@@ -18,7 +18,10 @@ variables:
   nexusUrl: 'http://localhost:8081'
   nexusRepo: 'raw-artifacts'
   nexusUsername: 'admin'
-  nexusPassword: '$(NEXUS_PASSWORD)'   # Stored securely in pipeline variables
+  nexusPassword: '$(NEXUS_PASSWORD)'
+  acrLoginServer: 'ragav29096.azurecr.io'
+  acrUsername: '$(ACR_USERNAME)'
+  acrPassword: '$(ACR_PASSWORD)'
   isDev: $[eq(variables['Build.SourceBranch'], 'refs/heads/dev')]
   isUAT: $[eq(variables['Build.SourceBranch'], 'refs/heads/uat')]
   isProd: $[eq(variables['Build.SourceBranch'], 'refs/heads/production')]
@@ -66,6 +69,7 @@ stages:
               public/**
               package.json
               package-lock.json
+              next.config.js
             targetFolder: 'next-app\$(artifactName)'
 
         - powershell: |
@@ -74,10 +78,11 @@ stages:
             Compress-Archive -Path "$source\*" -DestinationPath $zipFile -Force
           displayName: "Archive Build as ZIP"
 
+
         - publish: $(Build.ArtifactStagingDirectory)\$(artifactName)-$(buildVersion).zip
           artifact: $(artifactName)
           displayName: "Publish ZIP Artifact"
-
+    
 # === 3. SonarQube Scan (Dev Only) ===
 - stage: SonarQubeScan
   displayName: "3. SonarQube Analysis"
@@ -132,22 +137,25 @@ stages:
 
 # === 5. Trivy Vulnerability Scan (Dev Only) ===
 - stage: SecurityScan
-  displayName: "5. Trivy Security Scan"
+  displayName: "5. Trivy + Snyk Security Scan"
   condition: and(succeeded(), eq(variables.isDev, true))  # Run only on 'dev' branch
   jobs:
-    - job: TrivyScan
-      displayName: "Scan ZIP for Vulnerabilities"
+    - job: TrivyAndSnykScan
+      displayName: "Scan for Vulnerabilities"
       steps:
 
+        # --- Download ZIP Artifact ---
         - download: current
           artifact: $(artifactName)
 
+        # --- Extract ZIP ---
         - powershell: |
             $zipFile = "$(Pipeline.Workspace)\$(artifactName)\$(artifactName)-$(buildVersion).zip"
             $extractPath = "nodejs-app\unzipped"
             Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
           displayName: "Extract ZIP Contents"
 
+        # === TRIVY SCAN ===
         - powershell: |
             $templatePath = "$(Build.SourcesDirectory)\template\junit.tpl"
             $outputXml = "$(Build.ArtifactStagingDirectory)\junit-report-high-crit.xml"
@@ -177,4 +185,87 @@ stages:
             failTaskOnFailedTests: false
             testRunTitle: "Trivy Scan - High/Critical"
           displayName: "📊 Publish Trivy Scan Results"
+
+        # === SNYK SCAN (Recommended via PowerShell for multi-step reliability) ===
+        - powershell: |
+            npm install -g snyk snyk-to-html
+
+            Write-Host "Authenticating to Snyk..."
+            snyk auth $env:SNYK_TOKEN
+
+            Write-Host "Running Snyk Test..."
+            snyk test nodejs-app/unzipped --severity-threshold=high
+
+            Write-Host "Generating Snyk JSON Report..."
+            snyk test nodejs-app/unzipped --json | Out-File -Encoding utf8 snyk-report.json
+
+            Write-Host "Converting to HTML Report..."
+            snyk-to-html -i snyk-report.json -o "$(Build.ArtifactStagingDirectory)\snyk-report.html"
+          env:
+            SNYK_TOKEN: $(SNYK_TOKEN)
+          displayName: "🔍 Snyk Scan + HTML Report"
+
+- stage: DockerBuildAndPush
+  displayName: "6. Docker Build & Push to ACR"
+  condition: and(succeeded(), or(eq(variables.isDev, true), eq(variables.isUAT, true), eq(variables.isProd, true)))
+  jobs:
+    - job: BuildAndPush
+      displayName: "Build Docker Image and Push to ACR"
+      steps:
+
+        # --- Login to ACR ---
+        - script: |
+            echo "Logging into ACR..."
+            echo $(acrPassword) | docker login $(acrLoginServer) --username $(acrUsername) --password-stdin
+          displayName: "Login to ACR"
+
+        # --- Docker Build ---
+        - script: |
+            docker build -t $(acrLoginServer)/nodejs-app:$(buildVersion) "$(Build.SourcesDirectory)"
+          displayName: "Build Docker Image"
+
+        # --- Docker Push ---
+        - script: |
+            docker tag $(acrLoginServer)/nodejs-app:$(buildVersion) $(acrLoginServer)/nodejs-app:latest
+            docker push $(acrLoginServer)/nodejs-app:latest
+          displayName: "Tag & Push 'latest' Image"
+      
+
+    - job: RunContainerAndRestartNginx
+      displayName: "Run Docker Container and Restart Nginx if Needed"
+      dependsOn: BuildAndPush
+      condition: succeeded()
+      steps:
+        # --- Run Docker Container ---
+        - script: |
+            echo "Stopping any existing container..."
+            docker stop nodejs-app || echo "No running container to stop"
+
+            echo "Removing existing container..."
+            docker rm nodejs-app || echo "No container to remove"
+
+            echo "Running new container on port 3000..."
+            docker run -d --name nodejs-app -p 3000:3000 $(acrLoginServer)/nodejs-app:$(buildVersion)
+          displayName: "Run Docker Container on Port 3000"
+
+        # --- Check and Restart Nginx ---
+        - powershell: |
+            echo "=== Checking if Nginx is running ==="
+            $nginx = Get-Process -Name "nginx" -ErrorAction SilentlyContinue
+            if ($nginx) {
+              Write-Host "✅ Nginx is already running"
+            } else {
+              Write-Host "⚠️ Nginx not running. Attempting restart..."
+              cd /d D:\Projects\nginx-1.28.0\nginx-1.28.0
+              .\nginx.exe
+              Start-Sleep -Seconds 5
+              $check = Get-Process -Name "nginx" -ErrorAction SilentlyContinue
+              if ($check) {
+                Write-Host "✅ Nginx started successfully"
+              } else {
+                Write-Error "❌ Failed to start Nginx"
+                exit 1
+              }
+            }
+          displayName: "Check or Restart Nginx"
 
