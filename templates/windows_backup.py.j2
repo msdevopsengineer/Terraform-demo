@@ -1,0 +1,42 @@
+import os, shutil, subprocess
+from datetime import datetime
+from zipfile import ZipFile
+
+# Configuration
+iis_sites = {{ iis_sites | to_nice_json }}
+sql_instance = "{{ sql_instance }}"
+sql_user = "{{ sql_user }}"
+sql_password = "{{ sql_password }}"
+sql_databases = {{ sql_databases | to_nice_json }}
+backup_root = r"{{ backup_root }}"
+
+# Timestamp & paths
+month = datetime.now().strftime("%Y-%m")
+timestamp = datetime.now().strftime("%d%b%Y_%H%M")
+daily_folder = os.path.join(backup_root, month, timestamp)
+bak_folder = os.path.join(daily_folder, "SQLBackups")
+final_zip = os.path.join(backup_root, month, f"backup_{timestamp}.zip")
+
+os.makedirs(bak_folder, exist_ok=True)
+
+# SQL BAK backup
+for db in sql_databases:
+    bak_path = os.path.join(bak_folder, f"{db}_{timestamp}.bak")
+    cmd = [
+        "sqlcmd", "-S", sql_instance, "-U", sql_user, "-P", sql_password,
+        "-Q", f"BACKUP DATABASE [{db}] TO DISK = N'{bak_path}' WITH INIT"
+    ]
+    subprocess.run(cmd)
+
+# Zip IIS sites
+for name, path in iis_sites.items():
+    shutil.make_archive(os.path.join(daily_folder, name), "zip", path)
+
+# Final backup zip
+with ZipFile(final_zip, "w") as zf:
+    for root, _, files in os.walk(daily_folder):
+        for file in files:
+            fp = os.path.join(root, file)
+            zf.write(fp, os.path.relpath(fp, daily_folder))
+
+print(f"[OK] Backup completed: {final_zip}")

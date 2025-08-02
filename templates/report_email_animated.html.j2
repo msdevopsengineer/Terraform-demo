@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Backup Status Report</title>
+  <style>
+    :root {
+      --success-color: #2e7d32;
+      --success-bg: #e8f5e9;
+      --error-color: #c62828;
+      --error-bg: #ffebee;
+      --primary-color: #1e3c72;
+      --secondary-color: #2a5298;
+      --text-color: #333;
+      --light-text: #777;
+      --border-color: #e0e0e0;
+      --bg-color: #f5f7fa;
+    }
+
+    body {
+      font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      line-height: 1.6;
+      margin: 0;
+      padding: 0;
+    }
+
+    .email-container {
+      max-width: 640px;
+      margin: 20px auto;
+      background: #ffffff;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    }
+
+    .header {
+      padding: 28px 30px;
+      text-align: center;
+      background: #1e3c72;
+      color: white;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .header p {
+      margin: 8px 0 0;
+      opacity: 0.9;
+      font-size: 14px;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .footer {
+      padding: 20px 30px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--light-text);
+      background-color: #f9f9f9;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .footer p {
+      margin: 5px 0;
+    }
+
+    .status-container {
+      text-align: center;
+      margin: 20px 0 35px;
+      padding: 25px 20px;
+      border-radius: 10px;
+      background-color: {% if script_output.rc == 0 %}var(--success-bg){% else %}var(--error-bg){% endif %};
+      transition: all 0.3s ease;
+    }
+
+    .status-icon {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 15px;
+      display: block;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+    }
+
+    .status-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin: 10px 0 8px;
+      color: {% if script_output.rc == 0 %}var(--success-color){% else %}var(--error-color){% endif %};
+    }
+
+    .status-subtitle {
+      font-size: 16px;
+      color: var(--text-color);
+      margin-bottom: 0;
+      opacity: 0.9;
+    }
+
+    .details-section {
+      margin: 30px 0;
+      background: #fcfcfc;
+      border-radius: 10px;
+      padding: 20px;
+      border: 1px solid var(--border-color);
+    }
+
+    .details-section h3 {
+      margin-top: 0;
+      margin-bottom: 20px;
+      font-size: 18px;
+      color: var(--primary-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .detail-row {
+      display: flex;
+      margin-bottom: 14px;
+      align-items: baseline;
+    }
+
+    .detail-label {
+      font-weight: 600;
+      width: 140px;
+      color: var(--text-color);
+      font-size: 15px;
+    }
+
+    .detail-value {
+      flex: 1;
+      font-size: 15px;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 14px;
+      background-color: {% if script_output.rc == 0 %}rgba(46, 125, 50, 0.1){% else %}rgba(198, 40, 40, 0.1){% endif %};
+    }
+
+    .logs-container {
+      margin-top: 35px;
+    }
+
+    .logs-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0 0 15px;
+      color: var(--primary-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    pre {
+      background-color: #f8f8f8;
+      padding: 18px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      border: 1px solid var(--border-color);
+      margin: 0;
+    }
+
+    .progress-container {
+      margin: 25px 0;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background-color: #e0e0e0;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+      width: {% if script_output.rc == 0 %}100{% else %}70{% endif %}%;
+      transition: width 1s ease;
+    }
+
+    @media only screen and (max-width: 600px) {
+      .email-container {
+        margin: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      .content {
+        padding: 20px;
+      }
+
+      .detail-row {
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .detail-label {
+        width: 100%;
+      }
+
+      .header h1 {
+        font-size: 22px;
+      }
+
+      .status-title {
+        font-size: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="header">
+      <h1>🔒 Database Backup Report</h1>
+      <p>{{ ansible_date_time.date | default('N/A') }} at {{ ansible_date_time.time | default('N/A') }}</p>
+    </div>
+
+    <div class="content">
+      <div class="status-container">
+        {% if script_output.rc == 0 %}
+          <img src="https://img.icons8.com/color/96/000000/ok--v1.png" class="status-icon" alt="Success">
+          <h2 class="status-title">Backup Completed Successfully</h2>
+          <p class="status-subtitle">All databases were backed up without errors</p>
+        {% else %}
+          <img src="https://img.icons8.com/color/96/000000/error--v1.png" class="status-icon" alt="Failure">
+          <h2 class="status-title">Backup Process Failed</h2>
+          <p class="status-subtitle">Critical errors were encountered during backup</p>
+        {% endif %}
+      </div>
+
+      <div class="progress-container">
+        <div style="display: flex; justify-content: space-between;">
+          <span>Completion Status</span>
+          <span>{% if script_output.rc == 0 %}100%{% else %}70%{% endif %}</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill"></div>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h3>📋 Backup Summary</h3>
+        <div class="detail-row">
+          <span class="detail-label">Server Host:</span>
+          <span class="detail-value">{{ inventory_hostname | default('N/A') }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Status:</span>
+          <span class="detail-value">
+            <span class="status-badge" style="color: {% if script_output.rc == 0 %}var(--success-color){% else %}var(--error-color){% endif %};">
+              {% if script_output.rc == 0 %}SUCCESS{% else %}FAILED (Code: {{ script_output.rc }}){% endif %}
+            </span>
+          </span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Completion Time:</span>
+          <span class="detail-value">{{ ansible_date_time.iso8601 | default('N/A') }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Duration:</span>
+          <span class="detail-value">
+            {% if script_output.start is defined and script_output.end is defined %}
+              {{ (script_output.end | float - script_output.start | float) | round(2) }} seconds
+            {% else %}
+              N/A
+            {% endif %}
+          </span>
+        </div>
+      </div>
+
+      {% if script_output.stdout_lines or script_output.stderr_lines %}
+      <div class="logs-container">
+        <h3 class="logs-title">📜 {% if script_output.rc == 0 %}Backup Logs{% else %}Error Details{% endif %}</h3>
+        <pre>
+{% if script_output.rc == 0 %}
+{{ script_output.stdout_lines | join('\n') }}
+{% else %}
+{{ script_output.stderr_lines | join('\n') }}
+{% endif %}
+        </pre>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="footer">
+      <p>This report was automatically generated by the Ansible Backup System</p>
+      <p>Need help? Contact <a href="mailto:support@maylasoft.com" style="color: var(--primary-color); text-decoration: none;">helpdesk@maylasoft.com</a></p>
+      <p>&copy; {{ ansible_date_time.year | default('2025') }} Maylasoft LLP. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>

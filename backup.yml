@@ -1,0 +1,64 @@
+---
+- name: Render and run Python backup script on Windows
+  hosts: windows
+  gather_facts: yes
+  vars_files:
+    - vars/secrets.yml
+
+  vars:
+    remote_script_path: "C:\\scripts\\windows_backup.py"
+    local_report_template: "templates/report_email_animated.html.j2"
+    local_report_rendered: "backup_report.html"
+
+  tasks:
+    - name: Ensure backup script folder exists
+      ansible.windows.win_file:
+        path: "C:\\scripts"
+        state: directory
+
+    - name: Render backup script from Jinja2 template
+      ansible.builtin.template:
+        src: templates/windows_backup.py.j2
+        dest: "{{ remote_script_path }}"
+        mode: '0644'
+
+    - name: Run rendered Python backup script
+      ansible.windows.win_shell: |
+        python "{{ remote_script_path }}"
+      register: script_output
+      environment:
+        PYTHONIOENCODING: utf-8
+
+    - name: Show backup script output
+      debug:
+        var: script_output.stdout_lines
+
+    - name: Render HTML email report template
+      delegate_to: localhost
+      ansible.builtin.template:
+        src: "{{ local_report_template }}"
+        dest: "{{ local_report_rendered }}"
+      vars:
+        script_output: "{{ script_output }}"
+        hostname: "{{ inventory_hostname }}"
+        current_date: "{{ ansible_date_time.date }}"
+        current_time: "{{ ansible_date_time.time }}"
+        current_year: "{{ ansible_date_time.year }}"
+
+    - name: Send backup status email with report
+      delegate_to: localhost
+      ansible.builtin.mail:
+        host: "{{ smtp_server }}"
+        port: "{{ smtp_port }}"
+        username: "{{ smtp_user }}"
+        password: "{{ smtp_password }}"
+        to: "{{ email_to }}"
+        from: "{{ email_from }}"
+        subject: >-
+          {% if script_output.rc == 0 %}
+            ✅ Backup Successful - {{ inventory_hostname }}
+          {% else %}
+            ❌ Backup Failed - {{ inventory_hostname }}
+          {% endif %}
+        body: "{{ lookup('file', local_report_rendered) }}"
+        subtype: html
