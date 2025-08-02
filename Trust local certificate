@@ -1,0 +1,5 @@
+
+# if certificate is not working
+dotnet dev-certs https --clean 
+# execute the certificate and click and 'yes' to proceed.
+dotnet dev-certs https --trust 
